@@ -317,51 +317,52 @@ The simulations are designed to mimic **low-Mach, laminar cryogenic nitrogen** i
 All cases are based on the **incompressible Navier–Stokes equations** with buoyancy (Boussinesq approximation) coupled to a **convection–diffusion equation for temperature**.
 
 Let:
-- \(\mathbf{u} = (u_x, u_y, u_z)\): velocity field
-- \(p\): pressure
-- \(T\): temperature
-- \(\rho\): (reference) density of N₂
-- \(\mu\): dynamic viscosity
-- \(c_p\): specific heat at constant pressure
-- \(k\): thermal conductivity
-- \(\beta\): thermal expansion coefficient
-- \(T_\text{ref}\): reference temperature
-- \(\mathbf{g}\): gravitational acceleration vector
 
-**Momentum:**
+- **u = (u_x, u_y, u_z)** – velocity field  
+- **p** – pressure  
+- **T** – temperature  
+- **ρ** – (reference) density of N₂  
+- **μ** – dynamic viscosity  
+- **c_p** – specific heat at constant pressure  
+- **k** – thermal conductivity  
+- **β** – thermal expansion coefficient  
+- **T_ref** – reference temperature  
+- **g** – gravitational acceleration vector  
 
-\[
-\rho \left( \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} \right)
-= -\nabla p + \mu \nabla^2 \mathbf{u} + \rho\,\mathbf{g}\,\beta\,(T - T_\text{ref})
-\]
+Momentum:
+  ρ * (∂u/∂t + (u · ∇)u) = −∇p + μ ∇²u + ρ g β (T − T_ref)
 
-**Mass Conservation:**
+Mass conservation (incompressible):
+  ∇ · u = 0
 
-\[
-\nabla \cdot \mathbf{u} = 0
-\]
-
-**Energy (Temperature):**
-
-\[
-\rho c_p \left( \frac{\partial T}{\partial t} + \mathbf{u}\cdot\nabla T \right)
-= k \nabla^2 T
-\]
+Energy (temperature):
+  ρ c_p (∂T/∂t + u · ∇T) = k ∇²T
 
 These equations are discretized in space using finite elements (FEniCSx / DOLFINx) and integrated in time using an implicit time-stepping scheme.
 
 ### Boundary Conditions
 
-**Hollow Cylinder:**
-- **Inlet**: Prescribed velocity profile \(\mathbf{u} = \mathbf{u}_\text{in}(x, y, z)\) and temperature \(T = T_\text{in}\)
-- **Outlet**: Zero normal stress or fixed reference pressure \(p = p_\text{out}\); convective/zero-gradient temperature condition
-- **Cylinder Walls**: No-slip (\(\mathbf{u} = \mathbf{0}\)); prescribed wall temperature \(T = T_\text{wall}\)
+**Hollow cylinder**
 
-**Sealed Cylinder:**
-- **All Walls (including end caps)**: No-slip (\(\mathbf{u} = \mathbf{0}\)); prescribed wall temperature \(T = T_\text{wall}\) or insulated walls
-- **No mass flux** across boundaries (sealed volume)
-- **Initial Condition**: Velocity \(\mathbf{u}(t=0) = \mathbf{0}\); non-uniform temperature \(T(t=0, \mathbf{x})\) to trigger natural convection
+- **Inlet**  
+  Prescribed velocity profile `u = u_in(x, y, z)` and temperature `T = T_in`.
 
+- **Outlet**  
+  Zero normal stress or fixed reference pressure `p = p_out`, with a convective / zero-gradient temperature condition at the outlet.
+
+- **Cylinder walls**  
+  No-slip condition `u = 0` and prescribed wall temperature `T = T_wall` (or another specified thermal boundary condition).
+
+**Sealed cylinder**
+
+- **All walls (including end caps)**  
+  No-slip condition `u = 0`, with either prescribed wall temperature `T = T_wall` or thermally insulated walls (no heat flux).
+
+- **No mass flux**  
+  The volume is sealed: there is no inflow or outflow of mass across any boundary.
+
+- **Initial condition**  
+  Velocity `u(t = 0, x) = 0` everywhere, and a non-uniform temperature field `T(t = 0, x)` to trigger natural convection inside the sealed cylinder.
 ### Data Format
 
 Each simulation is stored as time-series data sampled on mesh points. Typical fields per time step:
