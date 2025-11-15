@@ -1,127 +1,396 @@
----
-title: title of the paper # TODO
-url: https://arxiv.org/abs/2007.14390 # TODO: update with the link to your paper
-labels: [label1, label2] # TODO: please add between 4 and 10 single-word (maybe two-words) labels (e.g. system heterogeneity, image classification, asynchronous, weight sharing, cross-silo). Do not use "". Remove this comment once you are done.
-dataset: [dataset1, dataset2] # TODO: list of datasets you include in your baseline. Do not use "". Remove this comment once you are done.
----
+# SIMD: Federated Learning for CFD Simulation
 
-> [!IMPORTANT]
-> This is the template for your `README.md`. Please fill-in the information in all areas with a :warning: symbol.
-> Please refer to the [Flower Baselines contribution](https://flower.ai/docs/baselines/how-to-contribute-baselines.html) and [Flower Baselines usage](https://flower.ai/docs/baselines/how-to-use-baselines.html) guides for more details.
-> Please complete the metadata section at the very top of this README. This generates a table at the top of the file that will facilitate indexing baselines.
-> Please remove this [!IMPORTANT] block once you are done with your `README.md` as well as all the `:warning:` symbols and the comments next to them.
+## Project Overview
 
-> [!IMPORTANT]
-> To help having all baselines similarly formatted and structured, we have included two scripts in `baselines/dev` that when run will format your code and run some tests checking if it's formatted.
-> These checks use standard packages such as `isort`, `black`, `pylint` and others. You as a baseline creator will need to install additional packages. These are already specified in the `pyproject.toml` of
-> your baseline. Follow these steps:
+**SIMD** (Scalable Independent Model Distribution) is a **federated learning system** that enables **collaborative training across distributed data silos** for Computational Fluid Dynamics (CFD) simulation using Graph Neural Networks (GNNs). The project demonstrates how organizations can jointly train models on large-scale scientific datasets without centralizing sensitive or massive simulation data.
+
+Using a MeshGraphNet-style architecture, SIMD predicts fluid dynamics properties (temperature, pressure, and velocity components) across mesh nodes. The **9.6 GB CFD dataset** is partitioned into **40 independent shards**, each representing a separate data silo (e.g., different organizations, simulation labs, or compute clusters). Each shard trains locally on its data partition, then **model weights are averaged** to create a unified global model—embodying true **collaborative learning without data sharing**.
+
+This approach is ideal for large-scale physics simulations where:
+- **Data privacy** matters (CFD simulations may be proprietary)
+- **Data transfer** is prohibitively expensive (9.6 GB is too large to move repeatedly)
+- **Compute resources** are distributed across multiple organizations or clusters
+- **Collaborative learning** across silos improves model generalization
+
+**Monitoring Dashboard:** [W&B Project - simd-cfd](https://wandb.ai/simd/simd-cfd/workspace)
+
+## Model Architecture
+
+The model (`simd/model.py`) uses a MeshGraphNet-inspired architecture built with PyTorch Geometric:
+
+- **Input Features:**
+  - Node features: `(N, 8)` - `[x, y, z, T, p, u_x, u_y, u_z]` (position, temperature, pressure, velocity)
+  - Edge features: `(E, 4)` - `[dx, dy, dz, r]` (relative positions and distance)
+  
+- **Architecture:**
+  - 3 NNConv graph convolutional layers with learned edge networks
+  - Hidden dimension: 128
+  - Each NNConv layer uses an MLP to generate edge-conditioned weights
+  - ReLU activations between layers
+  
+- **Output:**
+  - Node predictions: `(N, 5)` - `[ΔT, Δp, Δu_x, Δu_y, Δu_z]` (normalized deltas)
+
+## Data Handling
+
+The project handles a **9.6 GB CFD dataset** containing timestep snapshots stored as JSON files (`step_*.json`). To enable efficient federated training:
+
+### Two-Level Partitioning
+
+1. **Job-Level Sharding** (across GPU cluster jobs):
+   - Dataset is split into 40 shards
+   - Each shard contains a contiguous block of timestep files
+   - Environment variables: `SIMD_JOB_SHARD_ID` and `SIMD_JOB_NUM_SHARDS`
+
+2. **Client-Level Partitioning** (within each federated learning job):
+   - Each shard's data is further partitioned among Flower clients
+   - Enables multiple clients to train on subsets within each shard
+
+### Data Structure
+
+Each timestep JSON file contains:
+- `node_input`: Node features (coordinates and physical properties)
+- `edge_index`: Graph connectivity (2, E)
+- `edge_attr`: Edge features (relative geometry)
+- `target_delta`: Target changes in physical properties
+
+Normalization statistics (`node_stats.json`, `edge_stats.json`, `target_stats.json`) ensure standardized inputs.
+
+## Training Strategy: Evolution to 40 Shards
+
+We iteratively refined our sharding strategy to optimize for the GPU cluster's constraints (maximum 4 concurrent jobs):
+
+| Shards | Result | Issue |
+|--------|--------|-------|
+| **4 shards** | ❌ Timeout | Each shard too large, training exceeded cluster time limits |
+| **10 shards** | ❌ Timeout | Still too much data per shard, couldn't complete in time |
+| **20 shards** | ❌ Timeout | Improved but still hitting time limits |
+| **40 shards** | ✅ Success | **~7 min per shard** - Perfect for federated learning! |
+
+**Why 40 shards works:**
+- Each shard trains in ~7 minutes on average
+- Fits well within cluster job time limits
+- Each shard saves its own model checkpoint with its data partition
+- Enables efficient parallel training across the cluster
+- 4 jobs run concurrently, processing all 40 shards in waves
+
+## Running Training
+
+### Environment Setup
 
 ```bash
-# Create a python env
+# Create and activate virtual environment
 pyenv virtualenv 3.10.14 simd
-
-# Activate it
 pyenv activate simd
 
-# Install project including developer packages
-# Note the `-e` this means you install it in editable mode 
-# so even if you change the code you don't need to do `pip install`
-# again. However, if you add a new dependency to `pyproject.toml` you
-# will need to re-run the command below
-pip install -e ".[dev]"
-
-# Even without modifying or adding new code, you can run your baseline
-# with the placeholder code generated when you did `flwr new`. If you
-# want to test this to familiarise yourself with how flower apps are
-# executed, execute this from the directory where you `pyproject.toml` is:
-flwr run .
-
-# At anypoint during the process of creating your baseline you can 
-# run the formatting script. For this do:
-cd .. # so you are in the `flower/baselines` directory
-
-# Run the formatting script (it will auto-correct issues if possible)
-./dev/format-baseline.sh simd
-
-# Then, if the above is all good, run the tests.
-./dev/test-baseline.sh simd
-```
-
-> [!IMPORTANT]
-> When you open a PR to get the baseline merged into the main Flower repository, the `./dev/test-baseline.sh` script will run. Only if test pass, the baseline can be merged. 
-> Some issues highlighted by the tests script are easier than others to fix. Do not hesitate in reaching out for help to us (e.g. as a comment in your PR) if you are stuck with these.
-> Before opening your PR, please remove the code snippet above as well all the [!IMPORTANT] message blocks. Yes, including this one.
-
-# :warning: *_Title of your baseline_* # Also copy this title to the `description` in the `[project]` section of your `pyproject.toml`.
-
-> [!NOTE] 
-> If you use this baseline in your work, please remember to cite the original authors of the paper as well as the Flower paper.
-
-**Paper:** :warning: *_add the URL of the paper page (not to the .pdf). For instance if you link a paper on ArXiv, add here the URL to the abstract page (e.g. [paper](https://arxiv.org/abs/1512.03385)). If your paper is in from a journal or conference proceedings, please follow the same logic._*
-
-**Authors:** :warning: *_list authors of the paper_*
-
-**Abstract:** :warning: *_add here the abstract of the paper you are implementing_*
-
-
-## About this baseline
-
-**What’s implemented:** :warning: *_Concisely describe what experiment(s) (e.g. Figure 1, Table 2, etc.) in the publication can be replicated by running the code. Please only use a few sentences. ”_*
-
-**Datasets:** :warning: *_List the datasets you used (if you used a medium to large dataset, >10GB please also include the sizes of the dataset). We highly recommend using [FlowerDatasets](https://flower.ai/docs/datasets/index.html) to download and partition your dataset. If you have other ways to download the data, you can also use `FlowerDatasets` to partition it._*
-
-**Hardware Setup:** :warning: *_Give some details about the hardware (e.g. a server with 8x V100 32GB and 256GB of RAM) you used to run the experiments for this baseline. Indicate how long it took to run the experiments. Someone out there might not have access to the same resources you have so, could you list the absolute minimum hardware needed to run the experiment in a reasonable amount of time ? (e.g. minimum is 1x 16GB GPU otherwise a client model can’t be trained with a sufficiently large batch size). Could you test this works too?_*
-
-**Contributors:** :warning: *_let the world know who contributed to this baseline. This could be either your name, your name and affiliation at the time, or your GitHub profile name if you prefer. If multiple contributors signed up for this baseline, please list yourself and your colleagues_*
-
-
-## Experimental Setup
-
-**Task:** :warning: *_what’s the primary task that is being federated? (e.g. image classification, next-word prediction). If you have experiments for several, please list them_*
-
-**Model:** :warning: *_provide details about the model you used in your experiments (if more than use a list). If your model is small, describing it as a table would be :100:. Some FL methods do not use an off-the-shelve model (e.g. ResNet18) instead they create your own. If this is your case, please provide a summary here and give pointers to where in the paper (e.g. Appendix B.4) is detailed._*
-
-**Dataset:** :warning: *_Earlier you listed already the datasets that your baseline uses. Now you should include a breakdown of the details about each of them. Please include information about: how the dataset is partitioned (e.g. LDA with alpha 0.1 as default and all clients have the same number of training examples; or each client gets assigned a different number of samples following a power-law distribution with each client only instances of 2 classes)? if  your dataset is naturally partitioned just state “naturally partitioned”; how many partitions there are (i.e. how many clients)? Please include this an all information relevant about the dataset and its partitioning into a table._*
-
-**Training Hyperparameters:** :warning: *_Include a table with all the main hyperparameters in your baseline. Please show them with their default value._*
-
-
-## Environment Setup
-
-:warning: _Specify the steps to create and activate your environment and install the baseline project. Most baselines are expected to require minimal steps as shown below. These instructions should be comprehensive enough so anyone can run them (if non standard, describe them step-by-step)._
-
-:warning: _The dependencies for your baseline are listed in the `pyproject.toml`, extend it with additional packages needed for your baseline._
-
-:warning: _Baselines should use Python 3.10, [pyenv](https://github.com/pyenv/pyenv), and the [virtualenv](https://github.com/pyenv/pyenv-virtualenv) plugging. 
-
-```bash
-# Create the virtual environment
-pyenv virtualenv 3.10.14 <name-of-your-baseline-env>
-
-# Activate it
-pyenv activate <name-of-your-baseline-env>
-
-# Install the baseline
+# Install dependencies
 pip install -e .
 ```
 
-:warning: _If your baseline requires running some script before starting an experiment, please indicate so here_.
+### Launch Federated Training Across All Shards
 
-## Running the Experiments
+The following command submits 40 parallel jobs to the GPU cluster, each training on a different data shard:
 
-:warning: _Make sure you have adjusted the `client-resources` in the federation in `pyproject.toml` so your simulation makes the best use of the system resources available._
-
-:warning: _Your baseline implementation should replicate several of the experiments in the original paper. Please include here the exact command(s) needed to run each of those experiments followed by a figure (e.g. a line plot) or table showing the results you obtained when you ran the code. Below is an example of how you can present this. Please add command followed by results for all your experiments._
-
-:warning: _You might want to add more hyperparameters and settings for your baseline. You can do so by extending `[tool.flwr.app.config]` in `pyproject.toml`. In addition, you can create a new `.toml` file that can be passed with the `--run-config` command (see below an example) to override several config values **already present** in `pyproject.toml`._
 ```bash
-# it is likely that for one experiment you need to override some arguments.
-flwr run . --run-config learning-rate=0.1,coefficient=0.123
-
-# or you might want to load different `.toml` configs all together:
-flwr run . --run-config <my-big-experiment-config>.toml
+for SHARD in $(seq 0 39); do
+  ./submit-job.sh \
+    "export CFD_JSON_ROOT=\$HOME/cfd-metadata-json \
+     && export SIMD_JOB_SHARD_ID=${SHARD} \
+     && export SIMD_JOB_NUM_SHARDS=40 \
+     && export SIMD_CHECKPOINT_DIR=\$HOME/simd_checkpoints_wandb/shard${SHARD} \
+     && export WANDB_PROJECT=simd-cfd \
+     && export WANDB_RUN_GROUP=shard${SHARD} \
+     && cd \$HOME/coldstart/simd \
+     && flwr run . cluster-gpu" \
+    --gpu \
+    --name simd-s${SHARD}
+done
 ```
 
-:warning: _It is preferable to show a single command (or multiple commands if they belong to the same experiment) and then a table/plot with the expected results, instead of showing all the commands first and then all the results/plots._
-:warning: _If you present plots or other figures, please include either a Jupyter notebook showing how to create them or include a utility function that can be called after the experiments finish running._
-:warning: If you include plots or figures, save them in `.png` format and place them in a new directory named `_static` at the same level as your `README.md`.
+**Environment Variables:**
+- `CFD_JSON_ROOT`: Directory containing the JSON dataset
+- `SIMD_JOB_SHARD_ID`: Current shard ID (0-39)
+- `SIMD_JOB_NUM_SHARDS`: Total number of shards (40)
+- `SIMD_CHECKPOINT_DIR`: Where to save model checkpoints per shard
+- `WANDB_PROJECT`: Weights & Biases project name
+- `WANDB_RUN_GROUP`: W&B group for organizing runs by shard
+
+### How It Works
+
+1. **Job Submission**: The loop submits 40 jobs to the cluster
+2. **Concurrent Execution**: Maximum 4 jobs run simultaneously (cluster limit)
+3. **Wave Processing**: Jobs execute in waves until all 40 shards complete
+4. **Independent Training**: Each shard trains a model on its data partition
+5. **Checkpoint Saving**: Each shard saves its trained model independently
+6. **Monitoring**: All runs are tracked in W&B for visualization
+
+## Model Aggregation: Averaging Across Shards
+
+After all 40 shards complete training, we perform **federated averaging** to create a unified global model. This is the core of collaborative federated learning—each shard (representing a different data silo/organization) contributes its learned weights, and we compute the average to benefit from knowledge across all data partitions.
+
+### The Averaging Process
+
+The `avg.py` script implements **FedAvg** (Federated Averaging):
+1. **Collect checkpoints** from all 40 shard directories
+2. **Load each model's state_dict** (weights and biases)
+3. **Compute element-wise average** of all parameters
+4. **Save the global averaged model** for deployment
+
+This averaging approach:
+- ✅ **Preserves privacy**: Raw data never leaves each shard
+- ✅ **Leverages all data**: Global model benefits from entire 9.6 GB dataset
+- ✅ **Simple and effective**: Equal weighting assumes similar data distributions
+- ✅ **Scalable**: Works with any number of shards
+
+### Running Model Averaging
+
+After all training jobs complete, run:
+
+```bash
+python avg.py \
+  --ckpt-root "$HOME/simd_checkpoints_wandb" \
+  --shard-prefix shard \
+  --output "$HOME/simd_checkpoints_wandb/global_avg_latest.pt"
+```
+
+<details>
+<summary><b>Click to see full averaging output (40 shards)</b></summary>
+
+```
+[INFO] Found 40 shard checkpoints:
+  - /home/team09/simd_checkpoints_wandb/shard0/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard1/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard10/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard11/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard12/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard13/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard14/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard15/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard16/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard17/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard18/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard19/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard2/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard20/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard21/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard22/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard23/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard24/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard25/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard26/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard27/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard28/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard29/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard3/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard30/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard31/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard32/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard33/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard34/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard35/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard36/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard37/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard38/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard39/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard4/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard5/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard6/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard7/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard8/latest.pt
+  - /home/team09/simd_checkpoints_wandb/shard9/latest.pt
+[INFO] Averaging 40 checkpoints
+[INFO] Loading shard 1/40 from /home/team09/simd_checkpoints_wandb/shard0/latest.pt
+[INFO] Loading shard 2/40 from /home/team09/simd_checkpoints_wandb/shard1/latest.pt
+[INFO] Loading shard 3/40 from /home/team09/simd_checkpoints_wandb/shard10/latest.pt
+[INFO] Loading shard 4/40 from /home/team09/simd_checkpoints_wandb/shard11/latest.pt
+[INFO] Loading shard 5/40 from /home/team09/simd_checkpoints_wandb/shard12/latest.pt
+[INFO] Loading shard 6/40 from /home/team09/simd_checkpoints_wandb/shard13/latest.pt
+[INFO] Loading shard 7/40 from /home/team09/simd_checkpoints_wandb/shard14/latest.pt
+[INFO] Loading shard 8/40 from /home/team09/simd_checkpoints_wandb/shard15/latest.pt
+[INFO] Loading shard 9/40 from /home/team09/simd_checkpoints_wandb/shard16/latest.pt
+[INFO] Loading shard 10/40 from /home/team09/simd_checkpoints_wandb/shard17/latest.pt
+[INFO] Loading shard 11/40 from /home/team09/simd_checkpoints_wandb/shard18/latest.pt
+[INFO] Loading shard 12/40 from /home/team09/simd_checkpoints_wandb/shard19/latest.pt
+[INFO] Loading shard 13/40 from /home/team09/simd_checkpoints_wandb/shard2/latest.pt
+[INFO] Loading shard 14/40 from /home/team09/simd_checkpoints_wandb/shard20/latest.pt
+[INFO] Loading shard 15/40 from /home/team09/simd_checkpoints_wandb/shard21/latest.pt
+[INFO] Loading shard 16/40 from /home/team09/simd_checkpoints_wandb/shard22/latest.pt
+[INFO] Loading shard 17/40 from /home/team09/simd_checkpoints_wandb/shard23/latest.pt
+[INFO] Loading shard 18/40 from /home/team09/simd_checkpoints_wandb/shard24/latest.pt
+[INFO] Loading shard 19/40 from /home/team09/simd_checkpoints_wandb/shard25/latest.pt
+[INFO] Loading shard 20/40 from /home/team09/simd_checkpoints_wandb/shard26/latest.pt
+[INFO] Loading shard 21/40 from /home/team09/simd_checkpoints_wandb/shard27/latest.pt
+[INFO] Loading shard 22/40 from /home/team09/simd_checkpoints_wandb/shard28/latest.pt
+[INFO] Loading shard 23/40 from /home/team09/simd_checkpoints_wandb/shard29/latest.pt
+[INFO] Loading shard 24/40 from /home/team09/simd_checkpoints_wandb/shard3/latest.pt
+[INFO] Loading shard 25/40 from /home/team09/simd_checkpoints_wandb/shard30/latest.pt
+[INFO] Loading shard 26/40 from /home/team09/simd_checkpoints_wandb/shard31/latest.pt
+[INFO] Loading shard 27/40 from /home/team09/simd_checkpoints_wandb/shard32/latest.pt
+[INFO] Loading shard 28/40 from /home/team09/simd_checkpoints_wandb/shard33/latest.pt
+[INFO] Loading shard 29/40 from /home/team09/simd_checkpoints_wandb/shard34/latest.pt
+[INFO] Loading shard 30/40 from /home/team09/simd_checkpoints_wandb/shard35/latest.pt
+[INFO] Loading shard 31/40 from /home/team09/simd_checkpoints_wandb/shard36/latest.pt
+[INFO] Loading shard 32/40 from /home/team09/simd_checkpoints_wandb/shard37/latest.pt
+[INFO] Loading shard 33/40 from /home/team09/simd_checkpoints_wandb/shard38/latest.pt
+[INFO] Loading shard 34/40 from /home/team09/simd_checkpoints_wandb/shard39/latest.pt
+[INFO] Loading shard 35/40 from /home/team09/simd_checkpoints_wandb/shard4/latest.pt
+[INFO] Loading shard 36/40 from /home/team09/simd_checkpoints_wandb/shard5/latest.pt
+[INFO] Loading shard 37/40 from /home/team09/simd_checkpoints_wandb/shard6/latest.pt
+[INFO] Loading shard 38/40 from /home/team09/simd_checkpoints_wandb/shard7/latest.pt
+[INFO] Loading shard 39/40 from /home/team09/simd_checkpoints_wandb/shard8/latest.pt
+[INFO] Loading shard 40/40 from /home/team09/simd_checkpoints_wandb/shard9/latest.pt
+[DONE] Saved averaged model to: /home/team09/simd_checkpoints_wandb/global_avg_latest.pt
+```
+
+</details>
+
+The resulting `global_avg_latest.pt` represents knowledge learned from all 40 data silos, demonstrating successful **collaborative federated learning**.
+
+## Physics-Informed AI Inference & 3D Visualization
+
+Once the global model is trained through federated learning, we use it as a **physics-informed AI surrogate** to run fast CFD simulations. Instead of solving the full Navier-Stokes equations with FEniCSx (which can take hours), the trained GNN model predicts the fluid dynamics in seconds—making it ideal for real-time simulation, design optimization, and interactive exploration.
+
+### Interactive 3D Visualization Frontend
+
+We've built a **web-based 3D visualization tool** that allows users to:
+- Load and visualize CFD simulation data as 3D point clouds
+- Interact with the mesh geometry (rotate, zoom, auto-rotate)
+- Run inference using the trained model
+- Visualize temperature, pressure, and velocity fields with color-coded gradients
+- Scrub through timesteps to see flow evolution
+
+**Frontend Repository**: [https://github.com/simd-ai/f](https://github.com/simd-ai/f)
+
+![SIMD 3D Visualization Interface](render.png)
+*Interactive 3D point cloud visualization of hollow and sealed cylinder CFD simulations. The interface shows the mesh colored by field values (temperature/pressure/velocity) with real-time inference controls.*
+
+This frontend demonstrates the **end-to-end workflow**: from federated training on distributed data silos → model aggregation → fast physics-informed inference → interactive 3D visualization for engineers and researchers.
+
+## Project Structure
+
+```
+fed-train/
+├── simd/
+│   ├── client_app.py     # Flower client implementation
+│   ├── server_app.py     # Flower server for aggregation
+│   ├── model.py          # GNN model + train/test functions
+│   ├── dataset.py        # CFD graph dataset with sharding logic
+│   ├── strategy.py       # Federated learning strategy
+│   └── utils.py          # Helper utilities
+├── avg.py                # FedAvg model aggregation script
+├── pyproject.toml        # Project dependencies and config
+└── README.md
+```
+
+## Results & Monitoring
+
+Track training progress, loss curves, and per-channel MSE metrics (ΔT, Δp, Δu_x, Δu_y, Δu_z) on the W&B dashboard:
+
+**[https://wandb.ai/simd/simd-cfd/workspace](https://wandb.ai/simd/simd-cfd/workspace)**
+
+Each shard's training is logged separately with:
+- Training loss and per-channel MSE
+- Validation metrics
+- System metrics (GPU usage, timing)
+- Grouped by shard ID for easy comparison
+
+## Dataset: Hollow and Sealed Cylinder CFD Simulations
+
+We have have run real simulation to form the dataset which contains **real simulation results** for **transient 3D flow and heat transfer of gaseous nitrogen** inside a cylindrical domain, generated using **FEniCSx / DOLFINx** (finite element method). The complete dataset is publicly available at:
+
+**[https://huggingface.co/datasets/tihiera/cfd-metadata-json/](https://huggingface.co/datasets/tihiera/cfd-metadata-json/)**
+
+### Two Configurations
+
+We simulate two main configurations:
+
+- **Hollow cylinder (open / through-flow)**  
+  Cylinder with inlet and outlet boundaries. Nitrogen gas is driven through the cylinder (forced convection), and we observe how velocity, pressure, and temperature evolve along the flow direction.
+
+- **Sealed cylinder (closed / no through-flow)**  
+  Cylinder with closed ends (no mass inflow or outflow). The gas is initially non-uniform in temperature, and, under gravity and thermal boundary conditions at the walls, natural convection develops inside the sealed volume. We track the evolution of the flow field and temperature as the gas approaches a new equilibrium.
+
+The simulations are designed to mimic **low-Mach, laminar cryogenic nitrogen** in a cylindrical container.
+
+### Governing Equations
+
+All cases are based on the **incompressible Navier–Stokes equations** with buoyancy (Boussinesq approximation) coupled to a **convection–diffusion equation for temperature**.
+
+Let:
+- \(\mathbf{u} = (u_x, u_y, u_z)\): velocity field
+- \(p\): pressure
+- \(T\): temperature
+- \(\rho\): (reference) density of N₂
+- \(\mu\): dynamic viscosity
+- \(c_p\): specific heat at constant pressure
+- \(k\): thermal conductivity
+- \(\beta\): thermal expansion coefficient
+- \(T_\text{ref}\): reference temperature
+- \(\mathbf{g}\): gravitational acceleration vector
+
+**Momentum:**
+
+\[
+\rho \left( \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} \right)
+= -\nabla p + \mu \nabla^2 \mathbf{u} + \rho\,\mathbf{g}\,\beta\,(T - T_\text{ref})
+\]
+
+**Mass Conservation:**
+
+\[
+\nabla \cdot \mathbf{u} = 0
+\]
+
+**Energy (Temperature):**
+
+\[
+\rho c_p \left( \frac{\partial T}{\partial t} + \mathbf{u}\cdot\nabla T \right)
+= k \nabla^2 T
+\]
+
+These equations are discretized in space using finite elements (FEniCSx / DOLFINx) and integrated in time using an implicit time-stepping scheme.
+
+### Boundary Conditions
+
+**Hollow Cylinder:**
+- **Inlet**: Prescribed velocity profile \(\mathbf{u} = \mathbf{u}_\text{in}(x, y, z)\) and temperature \(T = T_\text{in}\)
+- **Outlet**: Zero normal stress or fixed reference pressure \(p = p_\text{out}\); convective/zero-gradient temperature condition
+- **Cylinder Walls**: No-slip (\(\mathbf{u} = \mathbf{0}\)); prescribed wall temperature \(T = T_\text{wall}\)
+
+**Sealed Cylinder:**
+- **All Walls (including end caps)**: No-slip (\(\mathbf{u} = \mathbf{0}\)); prescribed wall temperature \(T = T_\text{wall}\) or insulated walls
+- **No mass flux** across boundaries (sealed volume)
+- **Initial Condition**: Velocity \(\mathbf{u}(t=0) = \mathbf{0}\); non-uniform temperature \(T(t=0, \mathbf{x})\) to trigger natural convection
+
+### Data Format
+
+Each simulation is stored as time-series data sampled on mesh points. Typical fields per time step:
+
+- `p` — pressure
+- `T` — temperature
+- `ux` — x-component of velocity
+- `uy` — y-component of velocity
+- `uz` — z-component of velocity
+
+Dataset representation:
+- `pos` — node positions (3D coordinates)
+- `ai` — additional per-node attributes (e.g., masks, case IDs)
+- `steps` — integer time indices
+- `fields = ["p", "T", "ux", "uy", "uz"]`
+- `K` — number of time steps per sequence
+- `N` — number of spatial nodes
+- `C` — number of channels (fields)
+
+### Numerical Implementation
+
+- **Solver**: FEniCSx / DOLFINx (finite element method)
+- **Domain**: 3D cylinder with hollow vs sealed boundary conditions
+- **Equations**: Incompressible Navier–Stokes (+ buoyancy) + energy equation
+- **Unknowns**: \(\mathbf{u}(\mathbf{x}, t)\), \(p(\mathbf{x}, t)\), \(T(\mathbf{x}, t)\)
+- **Outputs**: Time-series fields for pressure, temperature, and velocity, used to train and evaluate MeshGraphNet / GNN surrogate models
+
+### Collaborative Learning Use Case
+
+SIMD demonstrates **practical federated learning for collaborative research**: Imagine 40 different organizations (universities, research labs, engineering firms) each possessing CFD simulation data from their proprietary experiments. Due to intellectual property concerns, data privacy regulations, and network constraints (9.6 GB is expensive to transfer repeatedly), they cannot share raw data.
+
+**SIMD's Solution**: Each organization keeps data locally (in their "shard"), trains a model independently, and shares only model weights (~50 MB vs 9.6 GB). FedAvg aggregation combines knowledge from all 40 organizations, and every organization receives a global model that learned from all data without seeing others' raw simulations—**true collaborative learning across data silos**.
