@@ -1,8 +1,6 @@
-# SIMD: Federated Learning for CFD Simulation
+# SIMD: Federated Learning for CFD Simulation using flwr on AMD GPU cluster
 
-## Project Overview
-
-**SIMD** (Scalable Independent Model Distribution) is a **federated learning system** that enables **collaborative training across distributed data silos** for Computational Fluid Dynamics (CFD) simulation using Graph Neural Networks (GNNs). The project demonstrates how organizations can jointly train models on large-scale scientific datasets without centralizing sensitive or massive simulation data.
+## Project Overview during the 72h hours hackathon!
 
 Using a MeshGraphNet-style architecture, SIMD predicts fluid dynamics properties (temperature, pressure, and velocity components) across mesh nodes. The **9.6 GB CFD dataset** is partitioned into **40 independent shards**, each representing a separate data silo (e.g., different organizations, simulation labs, or compute clusters). Each shard trains locally on its data partition, then **model weights are averaged** to create a unified global model—embodying true **collaborative learning without data sharing**.
 
@@ -381,17 +379,3 @@ Dataset representation:
 - `K` — number of time steps per sequence
 - `N` — number of spatial nodes
 - `C` — number of channels (fields)
-
-### Numerical Implementation
-
-- **Solver**: FEniCSx / DOLFINx (finite element method)
-- **Domain**: 3D cylinder with hollow vs sealed boundary conditions
-- **Equations**: Incompressible Navier–Stokes (+ buoyancy) + energy equation
-- **Unknowns**: \(\mathbf{u}(\mathbf{x}, t)\), \(p(\mathbf{x}, t)\), \(T(\mathbf{x}, t)\)
-- **Outputs**: Time-series fields for pressure, temperature, and velocity, used to train and evaluate MeshGraphNet / GNN surrogate models
-
-### Collaborative Learning Use Case
-
-SIMD demonstrates **practical federated learning for collaborative research**: Imagine 40 different organizations (universities, research labs, engineering firms) each possessing CFD simulation data from their proprietary experiments. Due to intellectual property concerns, data privacy regulations, and network constraints (9.6 GB is expensive to transfer repeatedly), they cannot share raw data.
-
-**SIMD's Solution**: Each organization keeps data locally (in their "shard"), trains a model independently, and shares only model weights (~50 MB vs 9.6 GB). FedAvg aggregation combines knowledge from all 40 organizations, and every organization receives a global model that learned from all data without seeing others' raw simulations—**true collaborative learning across data silos**.
